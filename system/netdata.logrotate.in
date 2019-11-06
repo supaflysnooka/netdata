@@ -6,14 +6,7 @@
 	delaycompress
 	notifempty
 	sharedscripts
-	#
-	# if you add netdata to your init.d/system.d
-	# comment su & copytruncate and uncomment postrotate
-	# to have netdata restart when logs are rotated
-	create 0640 netdata netdata
-	copytruncate
-	#
-	#postrotate
-	#	/sbin/service netdata try-restart >/dev/null
-	#endscript
+	postrotate
+		/bin/kill -HUP `cat @localstatedir_POST@/run/netdata/netdata.pid 2>/dev/null` 2>/dev/null || true
+	endscript
 }
