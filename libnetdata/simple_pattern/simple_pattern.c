@@ -273,7 +273,7 @@ extern void simple_pattern_dump(uint64_t debug_type, SIMPLE_PATTERN *p)
         debug(debug_type,"dump_pattern(NULL)");
         return;
     }
-    debug(debug_type,"dump_pattern(%p) child=%p next=%p mode=%d match=%s", root, root->child, root->next, root->mode,
+    debug(debug_type,"dump_pattern(%p) child=%p next=%p mode=%u match=%s", root, root->child, root->next, root->mode,
           root->match);
     if(root->child!=NULL)
         simple_pattern_dump(debug_type, (SIMPLE_PATTERN*)root->child);
@@ -330,4 +330,36 @@ extern int simple_pattern_is_potential_name(SIMPLE_PATTERN *p)
         root = root->next;
     }
     return (alpha || wildcards) && !colon;
+}
+
+char *simple_pattern_trim_around_equal(char *src) {
+    char *store = mallocz(strlen(src) +1);
+    if(!store)
+        return NULL;
+
+    char *dst = store;
+    while (*src) {
+        if (*src == '=') {
+            if (*(dst -1) == ' ')
+                dst--;
+
+            *dst++ = *src++;
+            if (*src == ' ')
+                src++;
+        }
+
+        *dst++ = *src++;
+    }
+    *dst = 0x00;
+
+    return store;
+}
+
+char *simple_pattern_iterate(SIMPLE_PATTERN **p)
+{
+    struct simple_pattern *root = (struct simple_pattern *) *p;
+    struct simple_pattern **Proot = (struct simple_pattern **)p;
+
+    (*Proot) = (*Proot)->next;
+    return (char *) root->match;
 }

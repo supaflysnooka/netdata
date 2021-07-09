@@ -1,30 +1,35 @@
+<!--
+title: "Netdata via apache's mod_proxy"
+custom_edit_url: https://github.com/netdata/netdata/edit/master/docs/Running-behind-apache.md
+-->
+
 # Netdata via apache's mod_proxy
 
 Below you can find instructions for configuring an apache server to:
 
-1.  proxy a single Netdata via an HTTP and HTTPS virtual host
-2.  dynamically proxy any number of Netdata servers
-3.  add user authentication
-4.  adjust Netdata settings to get optimal results
+1. Proxy a single Netdata via an HTTP and HTTPS virtual host.
+2. Dynamically proxy any number of Netdata servers.
+3. Add user authentication.
+4. Adjust Netdata settings to get optimal results.
 
 ## Requirements
 
-Make sure your apache has installed `mod_proxy` and `mod_proxy_http`.
+Make sure your apache has `mod_proxy` and `mod_proxy_http` installed and enabled.
 
-On debian/ubuntu systems, install them with this: 
+On Debian/Ubuntu systems, install apache, which already includes the two modules, using:
 
 ```sh
-sudo apt-get install apache2-bin
+sudo apt-get install apache2
 ```
 
-Also make sure they are enabled:
+Enable them:
 
 ```sh
 sudo a2enmod proxy
 sudo a2enmod proxy_http
 ```
 
-Ensure your rewrite module is enabled:
+Also, enable the rewrite module:
 
 ```sh
 sudo a2enmod rewrite
@@ -118,7 +123,6 @@ with this content:
 
 ```conf
 <VirtualHost *:80>
-	RewriteEngine On
 	ProxyRequests Off
 	ProxyPreserveHost On
 	
@@ -162,7 +166,7 @@ Repeat the operation for as many servers as you need.
 
 If you wish to add an authentication (user/password) to access your Netdata, do these:
 
-Install the package `apache2-utils`. On debian / ubuntu run `sudo apt-get install apache2-utils`.
+Install the package `apache2-utils`. On Debian/Ubuntu run `sudo apt-get install apache2-utils`.
 
 Then, generate password for user `netdata`, using `htpasswd -c /etc/apache2/.htpasswd netdata`
 
@@ -226,6 +230,51 @@ If you want to enable CSP within your Apache, you should consider some special r
 ```
 
 Note: Changes are applied by reloading or restarting Apache.
+
+## Using Netdata with Apache's `mod_evasive` module
+
+The `mod_evasive` Apache module helps system administrators protect their web server from brute force and distributed
+denial of service attack (DDoS) attacks.
+
+Because Netdata sends a request to the web server for every chart update, it's normal to create 20-30 requests per
+second, per client. If you're using `mod_evasive` on your Apache web server, this volume of requests will trigger the
+module's protection, and your dashboard will become unresponsive. You may even begin to see 403 errors.
+
+To mitigate this issue, you will need to change the value of the `DOSPageCount` option in your `mod_evasive.conf` file,
+which can typically be found at `/etc/httpd/conf.d/mod_evasive.conf` or `/etc/apache2/mods-enabled/evasive.conf`.
+
+The `DOSPageCount` option sets the limit of the number of requests from a single IP address for the same page per page
+interval, which is usually 1 second. The default value is `2` requests per second. Clearly, Netdata's typical usage will
+exceed that threshold, and `mod_evasive` will add your IP address to a blocklist.
+
+Our users have found success by setting `DOSPageCount` to `30`. Try this, and raise the value if you continue to see 403
+errors while accessing the dashboard.
+
+```conf
+DOSPageCount 30
+```
+
+Restart Apache with `sudo systemctl restart apache2`, or the appropriate method to restart services on your system, to
+reload its configuration with your new values.
+
+### Virtual host
+
+To adjust the `DOSPageCount` for a specific virtual host, open your virtual host config, which can be found at
+`/etc/httpd/conf/sites-available/my-domain.conf` or `/etc/apache2/sites-available/my-domain.conf` and add the
+following:
+
+```conf
+<VirtualHost *:80>
+	...
+	# Increase the DOSPageCount to prevent 403 errors and IP addresses being blocked.
+	<IfModule mod_evasive20.c>
+		DOSPageCount        30
+	</IfModule>
+</VirtualHost>
+```
+
+See issues [#2011](https://github.com/netdata/netdata/issues/2011) and
+[#7658](https://github.com/netdata/netdata/issues/7568) for more information.
 
 # Netdata configuration
 
@@ -301,7 +350,7 @@ If your apache server is not on localhost, you can set:
 
 *note: Netdata v1.9+ support `allow connections from`*
 
-`allow connections from` accepts [Netdata simple patterns](../libnetdata/simple_pattern/) to match against the connection IP address.
+`allow connections from` accepts [Netdata simple patterns](/libnetdata/simple_pattern/README.md) to match against the connection IP address.
 
 ## prevent the double access.log
 
@@ -314,7 +363,7 @@ apache logs accesses and Netdata logs them too. You can prevent Netdata from gen
 
 ## Troubleshooting mod_proxy
 
-Make sure the requests reach Netdata, by examing `/var/log/netdata/access.log`.
+Make sure the requests reach Netdata, by examining `/var/log/netdata/access.log`.
 
 1.  if the requests do not reach Netdata, your apache does not forward them.
 2.  if the requests reach Netdata but the URLs are wrong, you have not re-written them properly.
