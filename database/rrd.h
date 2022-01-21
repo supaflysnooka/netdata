@@ -15,6 +15,9 @@ typedef struct rrdcalctemplate RRDCALCTEMPLATE;
 typedef struct alarm_entry ALARM_ENTRY;
 typedef struct context_param CONTEXT_PARAM;
 
+typedef void *ml_host_t;
+typedef void *ml_dimension_t;
+
 // forward declarations
 struct rrddim_volatile;
 struct rrdset_volatile;
@@ -35,6 +38,7 @@ struct pg_cache_page_index;
 #include "rrdcalctemplate.h"
 #include "streaming/rrdpush.h"
 #include "aclk/aclk_rrdhost_state.h"
+#include "sqlite/sqlite_health.h"
 
 enum {
     CONTEXT_FLAGS_ARCHIVE = 0x01,
@@ -49,6 +53,7 @@ struct context_param {
     uint8_t flags;
 };
 
+#define RRDSET_MINIMUM_LIVE_COUNT 3
 #define META_CHART_UPDATED 1
 #define META_PLUGIN_UPDATED 2
 #define META_MODULE_UPDATED 4
@@ -162,7 +167,8 @@ typedef enum rrddim_flags {
     RRDDIM_FLAG_OBSOLETE                        = (1 << 2),  // this is marked by the collector/module as obsolete
     // No new values have been collected for this dimension since agent start or it was marked RRDDIM_FLAG_OBSOLETE at
     // least rrdset_free_obsolete_time seconds ago.
-    RRDDIM_FLAG_ARCHIVED                        = (1 << 3)
+    RRDDIM_FLAG_ARCHIVED                        = (1 << 3),
+    RRDDIM_FLAG_ACLK                            = (1 << 4)
 } RRDDIM_FLAGS;
 
 #ifdef HAVE_C___ATOMIC
@@ -379,6 +385,9 @@ struct rrddim_volatile {
     uuid_t *rrdeng_uuid;                 // database engine metric UUID
     struct pg_cache_page_index *page_index;
 #endif
+#ifdef ENABLE_ACLK
+    int aclk_live_status;
+#endif
     uuid_t metric_uuid;                 // global UUID for this metric (unique_across hosts)
     union rrddim_collect_handle handle;
     // ------------------------------------------------------------------------
@@ -415,6 +424,8 @@ struct rrddim_volatile {
         // get the timestamp of the first entry of this metric
         time_t (*oldest_time)(RRDDIM *rd);
     } query_ops;
+
+    ml_dimension_t ml_dimension;
 };
 
 // ----------------------------------------------------------------------------
@@ -422,6 +433,7 @@ struct rrddim_volatile {
 struct rrdset_volatile {
     char *old_title;
     char *old_context;
+    uuid_t hash_id;
     struct label *new_labels;
     struct label_index labels;
 };
@@ -650,6 +662,7 @@ struct alarm_entry {
     uint32_t unique_id;
     uint32_t alarm_id;
     uint32_t alarm_event_id;
+    uuid_t config_hash_id;
 
     time_t when;
     time_t duration;
@@ -741,6 +754,8 @@ struct rrdhost_system_info {
     char *container_detection;
     char *is_k8s_node;
     uint16_t hops;
+    bool ml_capable;
+    bool ml_enabled;
 };
 
 struct rrdhost {
@@ -762,7 +777,7 @@ struct rrdhost {
     const char *timezone;                           // the timezone of the host
 
 #ifdef ENABLE_ACLK
-    long    obsolete_count;
+    long    deleted_charts_count;
 #endif
 
     const char *abbrev_timezone;                    // the abbriviated timezone of the host
@@ -786,21 +801,22 @@ struct rrdhost {
     // ------------------------------------------------------------------------
     // streaming of data to remote hosts - rrdpush
 
-    unsigned int rrdpush_send_enabled:1;            // 1 when this host sends metrics to another netdata
+    unsigned int rrdpush_send_enabled;            // 1 when this host sends metrics to another netdata
     char *rrdpush_send_destination;                 // where to send metrics to
     char *rrdpush_send_api_key;                     // the api key at the receiving netdata
 
     // the following are state information for the threading
     // streaming metrics from this netdata to an upstream netdata
     struct sender_state *sender;
-    volatile unsigned int rrdpush_sender_spawn:1;   // 1 when the sender thread has been spawn
+    volatile unsigned int rrdpush_sender_spawn;   // 1 when the sender thread has been spawn
     netdata_thread_t rrdpush_sender_thread;         // the sender thread
+    void *dbsync_worker;
 
-    volatile unsigned int rrdpush_sender_connected:1; // 1 when the sender is ready to push metrics
+    volatile unsigned int rrdpush_sender_connected; // 1 when the sender is ready to push metrics
     int rrdpush_sender_socket;                      // the fd of the socket to the remote host, or -1
 
-    volatile unsigned int rrdpush_sender_error_shown:1; // 1 when we have logged a communication error
-    volatile unsigned int rrdpush_sender_join:1;    // 1 when we have to join the sending thread
+    volatile unsigned int rrdpush_sender_error_shown; // 1 when we have logged a communication error
+    volatile unsigned int rrdpush_sender_join;    // 1 when we have to join the sending thread
 
     SIMPLE_PATTERN *rrdpush_send_charts_matching;   // pattern to match the charts to be sent
 
@@ -823,7 +839,7 @@ struct rrdhost {
     // ------------------------------------------------------------------------
     // health monitoring options
 
-    unsigned int health_enabled:1;                  // 1 when this host has health enabled
+    unsigned int health_enabled;                  // 1 when this host has health enabled
     time_t health_delay_up_to;                      // a timestamp to delay alarms processing up to
     char *health_default_exec;                      // the full path of the alarms notifications program
     char *health_default_recipient;                 // the default recipient for all alarms
@@ -859,11 +875,17 @@ struct rrdhost {
 
     RRDSET *rrdset_root;                            // the host charts
 
+    unsigned int obsolete_charts_count;
+
 
     // ------------------------------------------------------------------------
     // locks
 
     netdata_rwlock_t rrdhost_rwlock;                // lock for this RRDHOST (protects rrdset_root linked list)
+
+    // ------------------------------------------------------------------------
+    // ML handle
+    ml_host_t ml_host;
 
     // ------------------------------------------------------------------------
     // Support for host-level labels
@@ -1038,6 +1060,7 @@ extern void rrdhost_system_info_free(struct rrdhost_system_info *system_info);
 extern void rrdhost_free(RRDHOST *host);
 extern void rrdhost_save_charts(RRDHOST *host);
 extern void rrdhost_delete_charts(RRDHOST *host);
+extern void rrd_cleanup_obsolete_charts();
 
 extern int rrdhost_should_be_removed(RRDHOST *host, RRDHOST *protected_host, time_t now);
 
@@ -1129,7 +1152,10 @@ static inline time_t rrdset_first_entry_t_nolock(RRDSET *st)
         time_t first_entry_t = LONG_MAX;
 
         rrddim_foreach_read(rd, st) {
-            first_entry_t = MIN(first_entry_t, rd->state->query_ops.oldest_time(rd));
+            first_entry_t =
+                MIN(first_entry_t,
+                    rd->state->query_ops.oldest_time(rd) > st->update_every ?
+                        rd->state->query_ops.oldest_time(rd) - st->update_every : 0);
         }
 
         if (unlikely(LONG_MAX == first_entry_t)) return 0;
@@ -1326,7 +1352,6 @@ extern void rrdset_save(RRDSET *st);
 extern void rrdset_delete_custom(RRDSET *st, int db_rotated);
 extern void rrdset_delete_obsolete_dimensions(RRDSET *st);
 
-extern void rrdhost_cleanup_obsolete_charts(RRDHOST *host);
 extern RRDHOST *rrdhost_create(
     const char *hostname, const char *registry_hostname, const char *guid, const char *os, const char *timezone,
     const char *abbrev_timezone, int32_t utc_offset,const char *tags, const char *program_name, const char *program_version,
@@ -1348,5 +1373,9 @@ extern void set_host_properties(
 #include "database/engine/rrdengineapi.h"
 #endif
 #include "sqlite/sqlite_functions.h"
-
+#include "sqlite/sqlite_aclk.h"
+#include "sqlite/sqlite_aclk_chart.h"
+#include "sqlite/sqlite_aclk_alert.h"
+#include "sqlite/sqlite_aclk_node.h"
+#include "sqlite/sqlite_health.h"
 #endif /* NETDATA_RRD_H */

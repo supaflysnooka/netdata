@@ -6,7 +6,7 @@ struct analytics_data analytics_data;
 extern void analytics_exporting_connectors (BUFFER *b);
 extern void analytics_exporting_connectors_ssl (BUFFER *b);
 extern void analytics_build_info (BUFFER *b);
-extern int aclk_connected;
+extern int aclk_connected, aclk_use_new_cloud_arch;
 
 struct collector {
     char *plugin;
@@ -52,6 +52,7 @@ void analytics_log_data(void)
     debug(D_ANALYTICS, "NETDATA_CONFIG_HOSTS_AVAILABLE     : [%s]", analytics_data.netdata_config_hosts_available);
     debug(D_ANALYTICS, "NETDATA_HOST_CLOUD_AVAILABLE       : [%s]", analytics_data.netdata_host_cloud_available);
     debug(D_ANALYTICS, "NETDATA_HOST_ACLK_AVAILABLE        : [%s]", analytics_data.netdata_host_aclk_available);
+    debug(D_ANALYTICS, "NETDATA_HOST_ACLK_PROTOCOL         : [%s]", analytics_data.netdata_host_aclk_protocol);
     debug(D_ANALYTICS, "NETDATA_HOST_ACLK_IMPLEMENTATION   : [%s]", analytics_data.netdata_host_aclk_implementation);
     debug(D_ANALYTICS, "NETDATA_HOST_AGENT_CLAIMED         : [%s]", analytics_data.netdata_host_agent_claimed);
     debug(D_ANALYTICS, "NETDATA_HOST_CLOUD_ENABLED         : [%s]", analytics_data.netdata_host_cloud_enabled);
@@ -97,6 +98,7 @@ void analytics_free_data(void)
     freez(analytics_data.netdata_config_hosts_available);
     freez(analytics_data.netdata_host_cloud_available);
     freez(analytics_data.netdata_host_aclk_available);
+    freez(analytics_data.netdata_host_aclk_protocol);
     freez(analytics_data.netdata_host_aclk_implementation);
     freez(analytics_data.netdata_host_agent_claimed);
     freez(analytics_data.netdata_host_cloud_enabled);
@@ -150,7 +152,7 @@ void analytics_get_data(char *name, BUFFER *wb)
  */
 void analytics_log_prometheus(void)
 {
-    if (likely(analytics_data.prometheus_hits < ANALYTICS_MAX_PROMETHEUS_HITS)) {
+    if (netdata_anonymous_statistics_enabled == 1 && likely(analytics_data.prometheus_hits < ANALYTICS_MAX_PROMETHEUS_HITS)) {
         analytics_data.prometheus_hits++;
         char b[7];
         snprintfz(b, 6, "%d", analytics_data.prometheus_hits);
@@ -163,7 +165,7 @@ void analytics_log_prometheus(void)
  */
 void analytics_log_shell(void)
 {
-    if (likely(analytics_data.shell_hits < ANALYTICS_MAX_SHELL_HITS)) {
+    if (netdata_anonymous_statistics_enabled == 1 && likely(analytics_data.shell_hits < ANALYTICS_MAX_SHELL_HITS)) {
         analytics_data.shell_hits++;
         char b[7];
         snprintfz(b, 6, "%d", analytics_data.shell_hits);
@@ -176,7 +178,7 @@ void analytics_log_shell(void)
  */
 void analytics_log_json(void)
 {
-    if (likely(analytics_data.json_hits < ANALYTICS_MAX_JSON_HITS)) {
+    if (netdata_anonymous_statistics_enabled == 1 && likely(analytics_data.json_hits < ANALYTICS_MAX_JSON_HITS)) {
         analytics_data.json_hits++;
         char b[7];
         snprintfz(b, 6, "%d", analytics_data.json_hits);
@@ -189,7 +191,7 @@ void analytics_log_json(void)
  */
 void analytics_log_dashboard(void)
 {
-    if (likely(analytics_data.dashboard_hits < ANALYTICS_MAX_DASHBOARD_HITS)) {
+    if (netdata_anonymous_statistics_enabled == 1 && likely(analytics_data.dashboard_hits < ANALYTICS_MAX_DASHBOARD_HITS)) {
         analytics_data.dashboard_hits++;
         char b[7];
         snprintfz(b, 6, "%d", analytics_data.dashboard_hits);
@@ -239,7 +241,7 @@ void analytics_mirrored_hosts(void)
 void analytics_exporters(void)
 {
     //when no exporters are available, an empty string will be sent
-    //decide if something else is more suitable (but propably not null)
+    //decide if something else is more suitable (but probably not null)
     BUFFER *bi = buffer_create(1000);
     analytics_exporting_connectors(bi);
     analytics_set_data_str(&analytics_data.netdata_exporting_connectors, (char *)buffer_tostring(bi));
@@ -372,7 +374,7 @@ char *get_value_from_key(char *buffer, char *key)
 }
 
 /*
- * Checks for the existance of .install_type file and reads it
+ * Checks for the existence of .install_type file and reads it
  */
 void analytics_get_install_type(void)
 {
@@ -488,27 +490,17 @@ void analytics_alarms(void)
 }
 
 /*
- * Misc attributes to get (run from meta)
+ * Misc attributes to get (run from start)
  */
 void analytics_misc(void)
 {
 #ifdef ENABLE_ACLK
     analytics_set_data(&analytics_data.netdata_host_cloud_available, "true");
-    if (aclk_ng)
-        analytics_set_data_str(&analytics_data.netdata_host_aclk_implementation, "Next Generation");
-    else
-        analytics_set_data_str(&analytics_data.netdata_host_aclk_implementation, "legacy");
+    analytics_set_data_str(&analytics_data.netdata_host_aclk_implementation, "Next Generation");
 #else
     analytics_set_data(&analytics_data.netdata_host_cloud_available, "false");
     analytics_set_data_str(&analytics_data.netdata_host_aclk_implementation, "");
 #endif
-
-#ifdef ENABLE_ACLK
-    if (aclk_connected)
-        analytics_set_data(&analytics_data.netdata_host_aclk_available, "true");
-    else
-#endif
-        analytics_set_data(&analytics_data.netdata_host_aclk_available, "false");
 
     analytics_set_data(&analytics_data.netdata_config_exporting_enabled, appconfig_get_boolean(&exporting_config, CONFIG_SECTION_EXPORTING, "enabled", CONFIG_BOOLEAN_NO) ? "true" : "false");
 
@@ -524,6 +516,23 @@ void analytics_misc(void)
     if (config_get_boolean(CONFIG_SECTION_REGISTRY, "enabled", CONFIG_BOOLEAN_NO) &&
         web_server_mode != WEB_SERVER_MODE_NONE)
         analytics_set_data(&analytics_data.netdata_config_is_private_registry, "true");
+}
+
+void analytics_aclk(void)
+{
+#ifdef ENABLE_ACLK
+    if (aclk_connected) {
+        analytics_set_data(&analytics_data.netdata_host_aclk_available, "true");
+#ifdef ENABLE_NEW_CLOUD_PROTOCOL
+        if (aclk_use_new_cloud_arch)
+            analytics_set_data_str(&analytics_data.netdata_host_aclk_protocol, "New");
+        else
+#endif
+            analytics_set_data_str(&analytics_data.netdata_host_aclk_protocol, "Legacy");
+    }
+    else
+#endif
+        analytics_set_data(&analytics_data.netdata_host_aclk_available, "false");
 }
 
 /*
@@ -551,6 +560,7 @@ void analytics_gather_mutable_meta_data(void)
     analytics_alarms();
     analytics_charts();
     analytics_metrics();
+    analytics_aclk();
 
     rrdhost_unlock(localhost);
 
@@ -589,6 +599,7 @@ void analytics_main_cleanup(void *ptr)
     static_thread->enabled = NETDATA_MAIN_THREAD_EXITING;
 
     debug(D_ANALYTICS, "Cleaning up...");
+    analytics_free_data();
 
     static_thread->enabled = NETDATA_MAIN_THREAD_EXITED;
 }
@@ -709,7 +720,7 @@ void set_late_global_environment()
     analytics_get_install_type();
 }
 
-static void get_system_timezone(void)
+void get_system_timezone(void)
 {
     // avoid flood calls to stat(/etc/localtime)
     // http://stackoverflow.com/questions/4554271/how-to-avoid-excessive-stat-etc-localtime-calls-in-strftime-on-linux
@@ -730,7 +741,7 @@ static void get_system_timezone(void)
     // use the contents of /etc/timezone
     if (!timezone && !read_file("/etc/timezone", buffer, FILENAME_MAX)) {
         timezone = buffer;
-        info("TIMEZONE: using the contents of /etc/timezone: '%s'", timezone);
+        info("TIMEZONE: using the contents of /etc/timezone");
     }
 
     // read the link /etc/localtime
@@ -891,6 +902,7 @@ void set_global_environment()
     analytics_set_data(&analytics_data.netdata_host_cloud_available, "null");
     analytics_set_data(&analytics_data.netdata_host_aclk_implementation, "null");
     analytics_set_data(&analytics_data.netdata_host_aclk_available, "null");
+    analytics_set_data(&analytics_data.netdata_host_aclk_protocol, "null");
     analytics_set_data(&analytics_data.netdata_host_agent_claimed, "null");
     analytics_set_data(&analytics_data.netdata_host_cloud_enabled, "null");
     analytics_set_data(&analytics_data.netdata_config_https_available, "null");
@@ -915,8 +927,6 @@ void set_global_environment()
     setenv("NETDATA_LISTEN_PORT", default_port, 1);
     if (clean)
         freez(default_port);
-
-    get_system_timezone();
 
     // set the path we need
     char path[1024 + 1], *p = getenv("PATH");
@@ -980,7 +990,7 @@ void send_statistics(const char *action, const char *action_result, const char *
 
     sprintf(
         command_to_run,
-        "%s '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' ",
+        "%s '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' ",
         as_script,
         action,
         action_result,
@@ -1014,6 +1024,7 @@ void send_statistics(const char *action, const char *action_result, const char *
         analytics_data.netdata_config_hosts_available,
         analytics_data.netdata_host_cloud_available,
         analytics_data.netdata_host_aclk_available,
+        analytics_data.netdata_host_aclk_protocol,
         analytics_data.netdata_host_aclk_implementation,
         analytics_data.netdata_host_agent_claimed,
         analytics_data.netdata_host_cloud_enabled,

@@ -38,6 +38,7 @@ Additionally, the following build time features require additional dependencies:
     -   A recent version of CMake
     -   OpenSSL 1.0.2 or newer _or_ LibreSSL 3.0.0 or newer.
     -   JSON-C (may be provided by the user as shown below, or by the system)
+    -   protobuf (Google Protocol Buffers) and protoc compiler
 
 ## Preparing the source tree
 
@@ -120,7 +121,7 @@ you can do the following to prepare a copy for the build system:
 4.  Build JSON-C by running `make` in the JSON-C source directory.
 5.  In the Netdata source directory, create a directory called
     `externaldeps/jsonc`.
-6.  Copy `libjson-c.a` fro the JSON-C source directory to
+6.  Copy `libjson-c.a` from the JSON-C source directory to
     `externaldeps/jsonc/libjson-c.a` in the Netdata source tree.
 7.  Copy all of the header files (`*.h`) from the JSON-C source directory
     to `externaldeps/jsonc/json-c` in the Netdata source tree.

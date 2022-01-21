@@ -3,12 +3,18 @@
 #ifndef NETDATA_EBPF_FILESYSTEM_H
 #define NETDATA_EBPF_FILESYSTEM_H 1
 
+// Module name
+#define NETDATA_EBPF_MODULE_NAME_FILESYSTEM "filesystem"
+
 #include "ebpf.h"
 
 #define NETDATA_FS_MAX_DIST_NAME 64UL
 
 #define NETDATA_FILESYSTEM_CONFIG_NAME "filesystem"
 #define NETDATA_FILESYSTEM_READ_SLEEP_MS 600000ULL
+
+// Process configuration name
+#define NETDATA_FILESYSTEM_CONFIG_FILE "filesystem.conf"
 
 typedef struct netdata_fs_hist {
     uint32_t hist_id;
@@ -53,8 +59,8 @@ typedef struct ebpf_filesystem_partitions {
     uint32_t flags;
     uint32_t enabled;
 
-    ebpf_data_t kernel_info;
     ebpf_addresses_t addresses;
+    uint64_t kernels;
 } ebpf_filesystem_partitions_t;
 
 extern void *ebpf_filesystem_thread(void *ptr);
